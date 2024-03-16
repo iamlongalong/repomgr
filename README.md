@@ -11,6 +11,11 @@ you can get this script this way 👇:
 curl -o repomgr https://raw.githubusercontent.com/iamlongalong/repomgr/main/repomgr && chmod +x repomgr && mv repomgr /usr/local/bin/ && repomgr -h
 ```
 
+如果访问 github 不方便，可以用这个 👇🏻:
+```bash
+curl -o repomgr https://static.longalong.cn/scripts/repomgr && chmod +x repomgr && mv repomgr /usr/local/bin/ && repomgr -h
+```
+
 ## 🚀 Features
 
 Support for Major Distributions: Whether you're a fan of Ubuntu, Debian, CentOS, or Alpine, repomgr has got your back.
