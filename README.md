@@ -4,7 +4,7 @@ Welcome to repomgr, your trusty sidekick for managing Linux software sources wit
 
 ## 👨‍💻 Usage
 
-![usage](./assets/usage.mov)
+![usage](./assets/usage.gif)
 
 you can get this script this way 👇:
 ```bash
