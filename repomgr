@@ -1,0 +1,450 @@
+#!/bin/sh
+# repomgr - A simple repo manager script
+
+OS=""
+OS_VERSION=""      # vx.x
+OS_VERSION_NAME="" # like bullseye in debian
+LOG_FILE="/var/log/repomgr.log"
+MIRROR_SOURCE=""
+REPO_FILE=""
+BACKUP_FILE=""
+TARGET_URL=""
+REPO_DIR=""
+BACKUP_DIR=""
+CURR_REPO_URL=""
+
+log() {
+    local message="$@"
+    printf "[LOG] $(date '+%Y-%m-%d %H:%M:%S') $message\n" | tee -a "$LOG_FILE"
+}
+
+# Function to log messages and exit with an error status
+logexit() {
+    local message="$@"
+    local code="${2:-1}" # Default exit status 1 unless provided as second argument
+    log "ERROR: $message"
+    exit "$code"
+}
+
+# Get current repo URL
+get_curr_repo_url() {
+    case "$OS" in
+    ubuntu | debian)
+        curr_repo_url=$(cat /etc/apt/sources.list | grep -m 1 -v '^#')
+        echo "$curr_repo_url"
+        ;;
+    centos)
+        curr_repo_url=$(cat /etc/yum.repos.d/CentOS-Base.repo | grep -v '^#' | grep 'baseurl' | head -n 1 | cut -d= -f2- | tr -d '" ')
+        curr_repo_url=${curr_repo_url:-"http://mirror.centos.org/centos/"}
+        echo "$curr_repo_url"
+        ;;
+    alpine)
+        curr_repo_url=$(cat /etc/apk/repositories | grep -m 1 -v '^#')
+        echo "$curr_repo_url"
+        ;;
+    *)
+        logexit "Unsupported OS [$OS] for get_curr_repo_url function." 2
+        ;;
+    esac
+}
+
+# Determine the OS distribution and version.
+init_os_info() {
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+
+        case "$NAME" in
+        "Ubuntu")
+            OS_VERSION_NAME=$VERSION_CODENAME
+            OS="ubuntu"
+            ;;
+        "Debian GNU/Linux")
+            OS_VERSION_NAME=$VERSION_CODENAME
+            OS="debian"
+            ;;
+        "CentOS Linux")
+            OS_VERSION_NAME=$VERSION_ID
+            OS_VERSION=$VERSION_ID
+            OS="centos"
+            ;;
+        "Alpine Linux")
+            OS_VERSION="v$(echo $VERSION_ID | cut -d '.' -f -2)"
+
+            OS_VERSION_NAME=$VERSION_CODENAME
+            OS="alpine"
+            ;;
+        *)
+            OS=""
+            ;;
+        esac
+
+        CURR_REPO_URL=$(get_curr_repo_url)
+
+    else
+        logexit "Cannot detect OS [$OS] version." 1
+    fi
+}
+
+print_os_info() {
+    init_os_info
+
+    printf "\nOS NAME: $OS\nVERSION: $OS_VERSION\nREPO: $CURR_REPO_URL\n\n"
+}
+
+# Get target repo URL based on user input
+get_target_repo_url() {
+    case "$MIRROR_SOURCE" in
+    ORI)
+        case "$OS" in
+        ubuntu) echo "http://archive.ubuntu.com/ubuntu" ;;
+        debian) echo "http://deb.debian.org/debian" ;;
+        centos) echo "http://mirror.centos.org/centos" ;;
+        alpine) echo "http://dl-cdn.alpinelinux.org/alpine" ;;
+        *) logexit "Unsupported OS for ORI source." 3 ;;
+        esac
+        ;;
+    THU)
+        case "$OS" in
+        ubuntu) echo "https://mirrors.tuna.tsinghua.edu.cn/ubuntu" ;;
+        debian) echo "https://mirrors.tuna.tsinghua.edu.cn/debian" ;;
+        centos) echo "https://mirrors.tuna.tsinghua.edu.cn/centos" ;;
+        alpine) echo "https://mirrors.tuna.tsinghua.edu.cn/alpine" ;;
+        *) logexit "Unsupported OS for THU source." 3 ;;
+        esac
+        ;;
+    ALI)
+        case "$OS" in
+        ubuntu) echo "http://mirrors.aliyun.com/ubuntu" ;;
+        debian) echo "http://mirrors.aliyun.com/debian" ;;
+        centos) echo "http://mirrors.aliyun.com/centos" ;;
+        alpine) echo "http://mirrors.aliyun.com/alpine" ;;
+        *) logexit "Unsupported OS for ALI source." 3 ;;
+        esac
+        ;;
+    USTC)
+        case "$OS" in
+        ubuntu) echo "https://mirrors.ustc.edu.cn/ubuntu" ;;
+        debian) echo "https://mirrors.ustc.edu.cn/debian" ;;
+        centos) echo "https://mirrors.ustc.edu.cn/centos" ;;
+        alpine) echo "https://mirrors.ustc.edu.cn/alpine" ;;
+        *) logexit "Unsupported OS for USTC source." 3 ;;
+        esac
+        ;;
+    *)
+        logexit "Invalid mirror source. Use ORI, THU, ALI, or USTC." 3
+        ;;
+    esac
+}
+
+handle_centos_repo_replace() {
+    case "$MIRROR_SOURCE" in
+    ORI)
+        case "$OS_VERSION" in
+        6 | 7)
+            sed -e 's|^#mirrorlist=|mirrorlist=|g' \
+                -e 's|^baseurl=http[s]\{0,1\}://.*/centos|#baseurl=http://mirror.centos.org/centos|g' \
+                -i.bak \
+                /etc/yum.repos.d/CentOS-*.repo
+            ;;
+        8)
+            sed -e 's|^#mirrorlist=|mirrorlist=|g' \
+                -e 's|^baseurl=http[s]\{0,1\}://.*/centos|#baseurl=http://mirror.centos.org/centos|g' \
+                -i.bak \
+                /etc/yum.repos.d/CentOS-*.repo
+            ;;
+        *) logexit "Unsupported OS_VERSION [$OS_VERSION] for ORI source." 3 ;;
+        esac
+        ;;
+    THU)
+        case "$OS_VERSION" in
+        6 | 7)
+            sed -e 's|^mirrorlist=|#mirrorlist=|g' \
+                -e 's|baseurl=http[s]\{0,1\}://.*/centos|baseurl=https://mirrors.tuna.tsinghua.edu.cn/centos|g' \
+                -e 's|^#baseurl=|baseurl=|g' \
+                -i.bak \
+                /etc/yum.repos.d/CentOS-*.repo
+            ;;
+        8)
+            sed -e 's|^mirrorlist=|#mirrorlist=|g' \
+                -e 's|baseurl=http[s]\{0,1\}://.*/$contentdir|baseurl=https://mirrors.tuna.tsinghua.edu.cn/centos|g' \
+                -e 's|^#baseurl=|baseurl=|g' \
+                -i.bak \
+                /etc/yum.repos.d/CentOS-*.repo
+            ;;
+        *) logexit "Unsupported OS_VERSION [$OS_VERSION] for THU source." 3 ;;
+        esac
+        ;;
+    USTC)
+        case "$OS_VERSION" in
+        6 | 7)
+            sed -e 's|^mirrorlist=|#mirrorlist=|g' \
+                -e 's|baseurl=http[s]\{0,1\}://.*/centos|baseurl=https://mirrors.ustc.edu.cn/centos|g' \
+                -e 's|^#baseurl=|baseurl=|g' \
+                -i.bak \
+                /etc/yum.repos.d/CentOS-Base.repo
+
+
+            ;;
+        8)
+            sed -e 's|^mirrorlist=|#mirrorlist=|g' \
+                -e 's|baseurl=http[s]\{0,1\}://.*/$contentdir|baseurl=https://mirrors.ustc.edu.cn/centos|g' \
+                -e 's|^#baseurl=|baseurl=|g' \
+                -i.bak \
+                /etc/yum.repos.d/CentOS-Stream-AppStream.repo \
+                /etc/yum.repos.d/CentOS-Stream-BaseOS.repo \
+                /etc/yum.repos.d/CentOS-Stream-Extras.repo \
+                /etc/yum.repos.d/CentOS-Stream-PowerTools.repo
+            ;;
+        *) logexit "Unsupported OS_VERSION [$OS_VERSION] for USTC source." 3 ;;
+        esac
+        ;;
+    ALI)
+        case "$OS_VERSION" in
+        6)
+            curl -o /etc/yum.repos.d/CentOS-Base.repo http://mirrors.aliyun.com/repo/Centos-6.repo
+            ;;
+        7)
+            curl -o /etc/yum.repos.d/CentOS-Base.repo http://mirrors.aliyun.com/repo/Centos-7.repo
+            ;;
+        8)
+            curl -o /etc/yum.repos.d/CentOS-Base.repo http://mirrors.aliyun.com/repo/Centos-8.repo
+            ;;
+        *) logexit "Unsupported OS_VERSION [$OS_VERSION] for ALI source." 3 ;;
+        esac
+        ;;
+    *)
+        logexit "Invalid mirror source. Use ORI, THU, ALI, or USTC." 3
+        ;;
+    esac
+}
+
+# Backup the current repo file
+backup_repo_file() {
+    case "$OS" in
+    ubuntu | debian)
+        cp /etc/apt/sources.list /etc/apt/sources.list.bak
+        ;;
+    centos)
+        cp /etc/yum.repos.d/CentOS-Base.repo /etc/yum.repos.d/CentOS-Base.repo.bak
+        ;;
+    alpine)
+        cp /etc/apk/repositories /etc/apk/repositories.bak
+        ;;
+    *)
+        logexit "Unsupported OS for backup." 2
+        ;;
+    esac
+}
+
+# Restore the backup repo file
+restore_repo_file() {
+    case "$OS" in
+    ubuntu | debian)
+        cp /etc/apt/sources.list.bak /etc/apt/sources.list
+        ;;
+    centos)
+        cp /etc/yum.repos.d/CentOS-Base.repo.bak /etc/yum.repos.d/CentOS-Base.repo
+        ;;
+    alpine)
+        cp /etc/apk/repositories.bak /etc/apk/repositories
+        ;;
+    *)
+        logexit "Unsupported OS for restore." 2
+        ;;
+    esac
+}
+
+update_repo_file() {
+    case "$OS" in
+    debian)
+        update_debian_based
+        ;;
+    ubuntu)
+        update_ubuntu_based
+        ;;
+    centos)
+        update_centos_based
+        ;;
+    alpine)
+        update_alpine_based
+        ;;
+    *)
+        logexit "Unsupported OS [$OS] for updating." 1
+        ;;
+    esac
+}
+
+update_alpine_based() {
+    REPO_FILE="/etc/apk/repositories"
+    BACKUP_FILE="/etc/apk/repositories.bak"
+    cp "$REPO_FILE" "$BACKUP_FILE"
+    log "Alpine repository file backed up."
+
+    TARGET_URL=$(get_target_repo_url)
+
+    {
+        echo "$TARGET_URL/$OS_VERSION/main"
+        echo "$TARGET_URL/$OS_VERSION/community"
+    } >"$REPO_FILE"
+
+    log "Alpine repository updated to $TARGET_URL."
+}
+
+update_debian_based() {
+    REPO_FILE="/etc/apt/sources.list"
+    BACKUP_FILE="/etc/apt/sources.list.bak"
+    cp $REPO_FILE $BACKUP_FILE
+    log "Debian-based repository file backed up."
+
+    TARGET_URL=$(get_target_repo_url)
+    cat >"$REPO_FILE" <<EOF
+deb $TARGET_URL $OS_VERSION_NAME main non-free contrib
+# deb-src $TARGET_URL $OS_VERSION_NAME main non-free contrib
+
+deb $TARGET_URL-security $OS_VERSION_NAME-security main
+# deb-src $TARGET_URL-security $OS_VERSION_NAME-security main
+
+deb $TARGET_URL $OS_VERSION_NAME-updates main non-free contrib
+# deb-src $TARGET_URL $OS_VERSION_NAME-updates main non-free contrib
+
+# bullseye-backports
+deb $TARGET_URL $OS_VERSION_NAME-backports main non-free contrib
+# deb-src $TARGET_URL $OS_VERSION_NAME-backports main non-free contrib
+EOF
+    log "Debian-based repository updated to $TARGET_URL."
+}
+
+update_ubuntu_based() {
+    REPO_FILE="/etc/apt/sources.list"
+    BACKUP_FILE="/etc/apt/sources.list.bak"
+    cp $REPO_FILE $BACKUP_FILE
+    log "Ubuntu-based repository file backed up."
+
+    TARGET_URL=$(get_target_repo_url)
+    cat >"$REPO_FILE" <<EOF
+deb $TARGET_URL $OS_VERSION_NAME main restricted
+# deb-src $TARGET_URL $OS_VERSION_NAME main restricted
+
+deb $TARGET_URL $OS_VERSION_NAME-updates main restricted
+# deb-src $TARGET_URL $OS_VERSION_NAME-updates main restricted
+
+deb $TARGET_URL $OS_VERSION_NAME universe
+# deb-src $TARGET_URL $OS_VERSION_NAME universe
+deb $TARGET_URL $OS_VERSION_NAME-updates universe
+# deb-src $TARGET_URL $OS_VERSION_NAME-updates universe
+
+deb $TARGET_URL $OS_VERSION_NAME multiverse
+# deb-src $TARGET_URL $OS_VERSION_NAME multiverse
+deb $TARGET_URL $OS_VERSION_NAME-updates multiverse
+# deb-src $TARGET_URL $OS_VERSION_NAME-updates multiverse
+
+deb $TARGET_URL $OS_VERSION_NAME-backports main restricted universe multiverse
+# deb-src $TARGET_URL $OS_VERSION_NAME-backports main restricted universe multiverse
+
+EOF
+    log "Ubuntu-based repository updated to $TARGET_URL."
+}
+
+update_centos_based() {
+    REPO_FILE="/etc/yum.repos.d/CentOS-Base.repo"
+    BACKUP_FILE="/etc/yum.repos.d/CentOS-Base.repo.bak"
+
+    cp $REPO_FILE $BACKUP_FILE
+    log "CentOS repository files backed up."
+
+    handle_centos_repo_replace
+    
+    log "CentOS repository updated to $MIRROR_SOURCE."
+}
+
+reset_to_backup() {
+    case "$OS" in
+    ubuntu | debian)
+        backup_file="/etc/apt/sources.list.bak"
+        if [ -f "$backup_file" ]; then
+            cp $backup_file /etc/apt/sources.list
+            log "Debian-based repository reset from backup."
+        else
+            log "no backup file of: $backup_file"
+        fi
+        ;;
+    centos)
+        backup_file="/etc/yum.repos.d/CentOS-Base.repo.bak"
+        if [ -f "$backup_file" ]; then
+            cp "$backup_file" /etc/yum.repos.d/CentOS-Base.repo
+            log "CentOS repository reset from backup."
+        else
+            log "no backup file of: $backup_file"
+        fi
+        ;;
+    alpine)
+        backup_file="/etc/apk/repositories.bak"
+        if [ -f "$backup_file" ]; then
+            cp "$backup_file" /etc/apk/repositories
+            log "Alpine repository reset from backup."
+        else
+            log "no backup file of: $backup_file"
+        fi
+        ;;
+    esac
+}
+
+display_help() {
+    cat <<EOF
+Usage: repomgr [OPTION]... [MIRROR_SOURCE]
+Update the software source for the detected Linux distribution.
+
+Options:
+  use [MIRROR_SOURCE]     Update the software source to use the specified mirror. Supported mirrors:
+                            - THU   : Tsinghua University TUNA mirror
+                            - ALI   : Alibaba mirror
+                            - USTC  : University of Science and Technology of China mirror
+                            - ORI   : Original official mirror
+  reset                   Reset software sources to the last backed up version.
+  info                    Display current repo info.
+  -h, --help              Display this help and exit
+
+Examples:
+  repomgr use THU         Set the software source to Tsinghua University TUNA mirror.
+  repomgr reset           Reset the software source to the backed up state.
+  repomgr info            Display current repo info.
+
+EOF
+}
+
+main() {
+
+    if [ -z "$1" ] || [ "$1" = '-h' ] || [ "$1" = '--help' ]; then
+        display_help
+        exit 0
+    fi
+
+    if [ "$1" = 'info' ]; then
+        print_os_info
+        exit 0
+    fi
+
+    init_os_info
+
+    if [ -z "$OS" ]; then
+        logexit "Error: Operating system not detected." 1
+    fi
+
+    if [ "$1" = 'reset' ]; then
+        reset_to_backup
+        exit 0
+    fi
+
+    if [ "$1" = 'use' ] && [ -n "$2" ]; then
+        MIRROR_SOURCE="$2"
+        update_repo_file
+        exit 0
+    fi
+
+    log "Invalid arguments. Try 'repomgr -h' for more information."
+    display_help
+    exit 1
+
+}
+
+main "$@"
